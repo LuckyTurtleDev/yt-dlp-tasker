@@ -1,7 +1,39 @@
-bin_name = "yt-dlp"
+# binary name 
+bin_name = "yt-dlp" #default
+# Intervall in which the programm should wait before check for downloads again in seconds,
+# messured from start to start.
+# The program will always wait at least 2 minutes before checking for dowload again.
+interval = 82800 #default
+
+
+
+[[profile]]
+# unique name/identifier for this profile
+name = "audio"
+# args that are passed to yt-dlp
+args = ["-x", "--embed-thumbnail", "--write-info-json", "-o", "audio/%(channel)s/%(id)s - %(title)s.%(ext)s"]
+# If true `--download-archive DOWNLOADNAME-PROFILENAME.txt` is added to the args,
+# where `PROFILENAME`` is the `name` field of this struct and `DOWNLOADNAME` is `name` entry of the [Download] struct.
+# If false you can still use download archive by manual adding them to [Profile] args field.
+archive = true #default
+
+[[profile]]
+name = "video"
+args = ["--write-info-json", "-o", "video/%(channel)s/%(id)s - %(title)s.%(ext)s"]
+
+
 
 [[download]]
-url = ["test"]
+name = "Rickroll"
+# Video url to be downloaded. You can use anything here which is supported by yt-dlp
+# Array is also supported
+url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+# profiles which is used to download the video.
+# If multiple profile are present the videos will be downloaded with each profile.
+# Single element without array is also supported.
+profile = ["audio", "video"]
 
 [[download]]
-url = [["1","2"], "test"]
+name = "Caminandes"
+url = ["https://www.youtube.com/watch?v=Z4C82eyhwgU", "https://www.youtube.com/watch?v=SkVqJ1SGeL0"]
+profile = "video"

@@ -1,22 +1,5 @@
 use serde::{Deserialize, Deserializer};
 
-#[derive(Debug)]
-//#[serde(deserialize_with = "vec_or_one")]
-pub struct VecOrOne<T>(Vec<T>);
-
-impl<'de, T> Deserialize<'de> for VecOrOne<T>
-where
-	T: Deserialize<'de>
-{
-	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-	where
-		D: Deserializer<'de>
-	{
-		let value = vec_or_one(deserializer)?;
-		Ok(VecOrOne(value))
-	}
-}
-
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 enum EVecOrOne<T> {
