@@ -1,17 +1,18 @@
 use std::{
 	collections::HashMap,
-	fs::{self, create_dir, create_dir_all},
+	fs::{self, create_dir_all},
 	process::Command,
 	thread::sleep,
 	time::{Duration, Instant}
 };
 
 use anyhow::{bail, Context};
+use reqwest::blocking::Client;
 use serde::Deserialize;
 mod serde_helper;
 use serde_helper::*;
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct Download {
 	/// Name of download job.
@@ -27,7 +28,7 @@ struct Download {
 	url: Vec<String>
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct Profile {
 	/// unique name/identifier for this profile
@@ -41,7 +42,7 @@ struct Profile {
 	archive: bool
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct Config {
 	/// path os yt-dlp binary (default: `yt-dlp`)
@@ -55,7 +56,9 @@ struct Config {
 	// Profile which is used to download the video.
 	// Array is also supported, so you can download it with differnet settings/profiles (as example as audio and video)
 	profile: Vec<Profile>,
-	download: Vec<Download>
+	download: Vec<Download>,
+	#[serde(default, deserialize_with = "vec_or_one")]
+	remote_job: Vec<String>
 }
 
 fn default_bin_name() -> String {
@@ -68,6 +71,84 @@ fn default_23h_in_seconds() -> u64 {
 
 fn default_true() -> bool {
 	true
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct TaskSource {
+	profile: Vec<Profile>,
+	download: Vec<Download>
+}
+
+struct Tasks {
+	profiles: HashMap<String, Profile>,
+	download: Vec<Download>
+}
+
+impl Tasks {
+	/// run all task and download all videos with associated settings
+	fn run_all(&self, config: &Config) {
+		// download
+		let mut errors = Vec::new();
+		for download_config in &self.download {
+			for profile_name in &download_config.profile {
+				let profile = self.profiles.get(profile_name).unwrap();
+				let res = download(config, download_config, profile).with_context(|| {
+					format!(
+						"Falied to process {:?} with profile {:?}",
+						download_config.name, profile.name
+					)
+				});
+				if let Err(err) = res {
+					eprintln!("{err:?}");
+					errors.push(err);
+				};
+				println!("\n\n\n\n\n\n")
+			}
+		}
+
+		// print error again as summary
+		// otherwise the user will not be able to find it at wall of text
+		for error in errors {
+			eprintln!("{error:?}\n");
+		}
+	}
+}
+
+impl TryFrom<TaskSource> for Tasks {
+	type Error = anyhow::Error;
+
+	fn try_from(value: TaskSource) -> Result<Self, Self::Error> {
+		let mut hash_profiles: HashMap<String, Profile> =
+			HashMap::with_capacity(value.profile.len());
+
+		// convert profile to hashmap
+		for profile in value.profile {
+			let profile_name = profile.name.clone();
+			if hash_profiles
+				.insert(profile_name.clone(), profile)
+				.is_some()
+			{
+				bail!("duplicate profile name {} at config", profile_name)
+			}
+		}
+
+		// check if all profile refs are valid
+		for download in &value.download {
+			for profile_name in &download.profile {
+				hash_profiles.get(profile_name).with_context(|| {
+					format!(
+						"can not find profile {:?} at download {:?}",
+						profile_name, download.name
+					)
+				})?;
+			}
+		}
+		Ok(Self {
+			profiles: hash_profiles,
+			download: value.download
+		})
+	}
 }
 
 fn main() {
@@ -93,54 +174,63 @@ fn main() {
 	}
 }
 
+/// a single download run
 fn run() -> anyhow::Result<u64> {
 	let config: Config = basic_toml::from_str(&fs::read_to_string("config.toml")?)?;
-	let mut profiles = HashMap::with_capacity(config.profile.len());
 
-	// convert profile to hashmap
-	for profile in &config.profile {
-		if profiles.insert(profile.name.clone(), profile).is_some() {
-			bail!("duplicate profile name {} at config", profile.name)
+	let local_job = Tasks::try_from(TaskSource {
+		profile: config.profile.clone(),
+		download: config.download.clone()
+	});
+	let local_job = match local_job.context("failed to load local jobs") {
+		Ok(value) => Some(value),
+		Err(err) => {
+			eprintln!("{err:?}");
+			None
 		}
+	};
+
+	let client = Client::new();
+	let remote_jobs: Vec<_> = config
+		.remote_job
+		.iter()
+		.filter_map(|url| {
+			match get_remote_job(&client, url)
+				.with_context(|| format!("failed to load remote job at {url:?}"))
+			{
+				Ok(value) => Some((url.clone(), value)),
+				Err(err) => {
+					eprintln!("{err:?}");
+					None
+				}
+			}
+		})
+		.collect();
+	drop(client);
+
+	if let Some(job) = local_job {
+		println!("run local jobs:");
+		job.run_all(&config);
 	}
 
-	// check if all profile refs are valid
-	for download_config in &config.download {
-		for profile_name in &download_config.profile {
-			profiles.get(profile_name).with_context(|| {
-				format!(
-					"can not find profile {:?} at download {:?}",
-					profile_name, download_config.name
-				)
-			})?;
-		}
+	for (url, job) in remote_jobs {
+		println!("run remote jobs from {url:?}");
+		job.run_all(&config)
 	}
 
-	// download
-	let mut errors = Vec::new();
-	for download_config in &config.download {
-		for profile_name in &download_config.profile {
-			let profile = profiles.get(profile_name).unwrap();
-			let res = download(&config, download_config, profile).with_context(|| {
-				format!(
-					"Falied to process {:?} with profile {:?}",
-					download_config.name, profile.name
-				)
-			});
-			if let Err(err) = res {
-				eprintln!("{err:?}");
-				errors.push(err);
-			};
-			println!("\n\n\n\n\n\n")
-		}
-	}
-
-	// print error again as summary
-	// otherwise the user will not be able to find it at wall of text
-	for error in errors {
-		eprintln!("{error:?}\n");
-	}
 	Ok(config.interval)
+}
+
+fn get_remote_job(client: &Client, url: &str) -> anyhow::Result<Tasks> {
+	let source = client
+		.get(url)
+		.send()
+		.context("failed to send request")?
+		.text()
+		.context("failed to load body")?;
+	let source: TaskSource =
+		basic_toml::from_str(&source).context("failed to prase json")?;
+	Tasks::try_from(source)
 }
 
 fn download(
