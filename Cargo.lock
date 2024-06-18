@@ -1481,7 +1481,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "yt-dlp-dec"
+name = "yt-dlp-tasker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
